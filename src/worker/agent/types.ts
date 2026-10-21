@@ -60,8 +60,6 @@ export interface ToolParameter {
   type: 'string' | 'number' | ['string' | 'number', 'null'];
   description: string;
   enum?: string[];
-  minimum?: number;
-  maximum?: number;
 }
 
 export interface ToolDefinition {

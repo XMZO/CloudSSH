@@ -256,7 +256,20 @@ describe('Responses protocol and execution boundary', () => {
       expect(tool).not.toHaveProperty('function');
       expect(tool.parameters.required).toEqual(Object.keys(tool.parameters.properties));
       expect(tool.parameters.additionalProperties).toBe(false);
+      // Claude 等的严格工具模式不支持数值 / 字符串约束关键字：范围只在本地校验
+      for (const schema of Object.values(tool.parameters.properties)) {
+        for (const keyword of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength']) {
+          expect(schema).not.toHaveProperty(keyword);
+        }
+      }
     }
+    // 范围仍在本地校验
+    expect(parseToolArguments('execute_command', '{"command":"df","timeout_ms":180000}')).toEqual({ command: 'df', timeout_ms: 180000 });
+    expect(parseToolArguments('read_terminal_context', '{"last_lines":1000}')).toEqual({ last_lines: 1000 });
+    for (const args of ['{"last_lines":0}', '{"last_lines":1001}']) {
+      expect(() => parseToolArguments('read_terminal_context', args)).toThrow('Invalid number range');
+    }
+    expect(() => parseToolArguments('execute_command', '{"command":"df","timeout_ms":999}')).toThrow('Invalid number range');
     // 标准完整参数
     expect(parseToolArguments('execute_command', '{"command":"df -h","timeout_ms":null}')).toEqual({ command: 'df -h', timeout_ms: null });
     // 弱模型常见容错：漏传可选为null的字段，回退默认 null
