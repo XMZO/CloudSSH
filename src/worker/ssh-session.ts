@@ -92,6 +92,8 @@ const SOCKET_WRITE_TIMEOUT_MS = 60_000;
 // 60s 宽限 > 2 个 keepalive 周期，正常会话不会误杀。
 const IDLE_WATCHDOG_CHECK_MS = 10_000;
 const IDLE_WATCHDOG_GRACE_MS = 60_000;
+/** 断线保持期内暂存、恢复后补发的 Agent 帧上限（流式片段不暂存：stream_end 自带完整回答） */
+const DETACHED_AGENT_FRAME_MAX_BYTES = 256 * 1024;
 // 浏览器→服务器终端输入队列上限：浏览器卡死时防止 channelDataQueue 无界堆积。
 const MAX_INPUT_QUEUE_BYTES = 4 * 1024 * 1024;
 
@@ -227,6 +229,8 @@ export class SSHSession {
   // Agent integration
   private terminalContext: TerminalContext = new TerminalContext();
   private agentCore: AgentCore | null = null;
+  private detachedAgentFrames: Array<{ text: string; bytes: number }> = [];
+  private detachedAgentFrameBytes = 0;
   private activeExecChannels: Map<number, AgentExecChannel> = new Map();
   private directTcpipStreams: Map<number, DirectTcpipStream> = new Map();
   private pendingDirectTcpip: Map<
@@ -3460,12 +3464,50 @@ export class SSHSession {
   }
 
   private sendAgentFrame(msg: any): void {
-    try {
-      if (this.ws.readyState === WebSocket.OPEN) {
+    if (!this.isDetached() && this.ws.readyState === WebSocket.OPEN) {
+      try {
         this.ws.send(JSON.stringify(msg));
+        return;
+      } catch {
+        /* 发送失败：当作没送达，下面暂存 */
       }
+    }
+    this.queueDetachedAgentFrame(msg);
+  }
+
+  /**
+   * 断线保持期内（或 WebSocket 已断、还没进入保持期）送不到的 Agent 帧先暂存，恢复会话时按顺序补发。
+   * 不暂存的话，这期间 Agent 答完（run_end、最终回答）或弹出待确认命令，面板收不到，一直显示“思考中”；
+   * 而 Worker 这边 Agent 已结束或在等确认，不再续期用户活动，空闲超时到点就把会话断开。
+   * 流式片段不暂存（stream_end 带完整回答）；超出上限时丢最早的帧，最新的结束帧总能留下。
+   */
+  private queueDetachedAgentFrame(msg: any): void {
+    if (this.closed || msg?.subType === 'stream_chunk') return;
+    let text: string;
+    try {
+      text = JSON.stringify(msg);
     } catch {
-      /* WebSocket 已关闭，无法送达 */
+      return;
+    }
+    const bytes = text.length * 2;
+    if (bytes > DETACHED_AGENT_FRAME_MAX_BYTES) return;
+    this.detachedAgentFrames.push({ text, bytes });
+    this.detachedAgentFrameBytes += bytes;
+    while (this.detachedAgentFrameBytes > DETACHED_AGENT_FRAME_MAX_BYTES) {
+      this.detachedAgentFrameBytes -= this.detachedAgentFrames.shift()!.bytes;
+    }
+  }
+
+  private flushDetachedAgentFrames(): void {
+    const frames = this.detachedAgentFrames;
+    this.detachedAgentFrames = [];
+    this.detachedAgentFrameBytes = 0;
+    for (const frame of frames) {
+      try {
+        this.ws.send(frame.text);
+      } catch {
+        return;
+      }
     }
   }
 
@@ -3608,6 +3650,9 @@ export class SSHSession {
       }
     }
 
+    // 1.5 补发断线期间送不到的 Agent 帧（回答、结束、待确认命令）
+    this.flushDetachedAgentFrames();
+
     // 2. 补发断线期间暂存的输出数据
     const chunks = this.detachedBuffer.drainOutput();
     for (const chunk of chunks) {
@@ -3640,6 +3685,8 @@ export class SSHSession {
     this.versionRawBuffer = new Uint8Array(0);
     this.terminalOutputGuard.dispose();
     this.detachedBuffer.clear();
+    this.detachedAgentFrames = [];
+    this.detachedAgentFrameBytes = 0;
     this.notifyShareSessionClosed(normal);
     if (!this.authenticatedSettled) {
       this.authenticatedSettled = true;

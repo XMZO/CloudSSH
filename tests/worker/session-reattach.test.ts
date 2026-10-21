@@ -171,6 +171,56 @@ describe('SSHSession Re-attach & Backpressure Flow Control', () => {
     expect(socket.close).toHaveBeenCalled();
   });
 
+  it('queues agent frames while detached and replays them after session_resumed', async () => {
+    const { session, ws } = createMockSession();
+    const internal = session as any;
+    internal.state = 'ready';
+
+    // 断线保持期内 Agent 答完：流式片段不暂存，最终回答与结束帧要留到恢复后补发
+    session.setDetached(true);
+    ws.readyState = 3;
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'stream_chunk', content: 'par' });
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'stream_end', content: 'final answer' });
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'run_end', outcome: 'completed' });
+    expect(ws.send).not.toHaveBeenCalled();
+
+    const newWs = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    await session.reattachWebSocket(newWs as unknown as WebSocket);
+    const sent = newWs.send.mock.calls.map(([data]) => JSON.parse(data as string));
+    const kinds = sent.map((msg) => (msg.type === 'agent_frame' ? msg.subType : msg.type));
+    expect(kinds).not.toContain('stream_chunk');
+    expect(kinds.filter((kind) => kind === 'stream_end' || kind === 'run_end')).toEqual(['stream_end', 'run_end']);
+    expect(kinds.indexOf('session_resumed')).toBeLessThan(kinds.indexOf('stream_end'));
+    expect(sent.find((msg) => msg.subType === 'stream_end').content).toBe('final answer');
+
+    // 补发后清空，之后的帧直接发送
+    newWs.send.mockClear();
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'thinking', iteration: 2 });
+    expect(newWs.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(newWs.send.mock.calls[0][0] as string).subType).toBe('thinking');
+  });
+
+  it('bounds queued agent frames, keeps the newest, and drops them on close', () => {
+    const { session, ws } = createMockSession();
+    const internal = session as any;
+    session.setDetached(true);
+    ws.readyState = 3;
+
+    const big = 'x'.repeat(40 * 1024);
+    for (let i = 0; i < 10; i++) internal.sendAgentFrame({ type: 'agent_frame', subType: 'response', content: `${i}:${big}` });
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'run_end', outcome: 'completed' });
+    expect(internal.detachedAgentFrameBytes).toBeLessThanOrEqual(256 * 1024);
+    const queued = internal.detachedAgentFrames.map((frame: { text: string }) => JSON.parse(frame.text));
+    expect(queued.at(-1).subType).toBe('run_end');
+    expect(queued[0].content.startsWith('0:')).toBe(false);
+
+    session.close(true);
+    expect(internal.detachedAgentFrames).toHaveLength(0);
+    expect(internal.detachedAgentFrameBytes).toBe(0);
+    internal.sendAgentFrame({ type: 'agent_frame', subType: 'run_end', outcome: 'stopped' });
+    expect(internal.detachedAgentFrames).toHaveLength(0);
+  });
+
   it('records audit events for share session on detach and resume', async () => {
     const ws = {
       readyState: 1,
