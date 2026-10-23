@@ -101,9 +101,14 @@ export class SSHSessionDO {
   /** 上一代 resume token：容忍轮换帧在弱网下丢失后的客户端重试。 */
   private sessionToPrevResumeToken: Map<SSHSession, string> = new Map();
 
+  /** 本实例的启动时间：恢复被拒时附上实例年龄，刚启动的实例说明 Durable Object 重启过、内存里的会话已丢失 */
+  private readonly startedAt = Date.now();
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    // 测试里的模拟 state 可能没有 id
+    console.info(`[session-do] instance started id=${state.id?.toString().slice(0, 12) ?? 'unknown'}`);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -354,6 +359,7 @@ export class SSHSessionDO {
         session.setDetached(true);
 
         const graceTimeout = setTimeout(() => {
+          this.resumeDebug(`grace expired sid=${sessionId.slice(0, 16)}`);
           this.cleanupDetachedSession(sessionId);
         }, SESSION_GRACE_PERIOD_MS);
 
@@ -418,7 +424,9 @@ export class SSHSessionDO {
   ): Promise<Response> {
     const detached = this.detachedSessions.get(sessionId);
     if (!detached) {
-      this.resumeDebug(`reject not_found sid=${sessionId.slice(0, 16)}`);
+      this.resumeDebug(
+        `reject not_found sid=${sessionId.slice(0, 16)} instanceAgeMs=${Date.now() - this.startedAt}`
+      );
       return resumeReject(404, 'Session expired or not found');
     }
 
@@ -605,11 +613,13 @@ export class SSHSessionDO {
     this.sessionBaselines.delete(session);
   }
 
-  /** DEBUG_MODE=true 时输出恢复链路诊断面包屑，用于定位分享会话恢复失败的具体拒绝分支。 */
+  /**
+   * 会话断开与恢复链路的诊断面包屑（断开时是否进入保持期、保持期到期、恢复被拒的具体分支），用于定位
+   * “断线后恢复不了”。每次断开 / 恢复才有一两条，始终输出，由 Workers Logs 留存（wrangler.toml [observability]）；
+   * 只含会话 ID 前 16 位与状态，不含凭据。
+   */
   private resumeDebug(message: string): void {
-    if (this.env.DEBUG_MODE === 'true') {
-      console.info(`[resume-debug] ${message}`);
-    }
+    console.info(`[resume-debug] ${message}`);
   }
 
   private cleanupDetachedSession(sessionId: string): void {

@@ -15,6 +15,16 @@ REQUIRE_GITHUB_AUTH = "false"
 # SSH 远端主机公钥签名严格校验：默认 fail-closed；仅本地调试老旧服务器时才允许 "false"
 STRICT_HOST_KEY_VERIFY = "true"
 
+# Workers Logs（Dashboard → Workers → 本 Worker → Logs 查询）：只留代码自己写的 console 日志——会话断开、
+# 断线保持期开始与到期、恢复会话被拒的原因、会话实例新起（Durable Object 重启后的第一条）等，量很小；
+# 关闭调用日志（每次请求、每条 WebSocket 消息各一条：终端心跳、输出确认很密，会很快用完每日免费额度）。
+# test 环境沿用同一设置
+[observability]
+enabled = true
+
+[observability.logs]
+invocation_logs = false
+
 # 构建监视路径：仅源代码变动时触发重新构建
 [build]
 watch_dir = "."

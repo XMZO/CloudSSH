@@ -467,6 +467,10 @@ pnpm run deploy:test     # 部署 test 环境
 - 在 Cloudflare Dashboard → Workers → 你的 Worker → Settings → Domains & Routes 中添加
 - 或在 `wrangler.toml` 中添加 `[[routes]]` 配置（仅本地使用，勿提交到仓库）
 
+### 日志留存（Workers Logs）
+
+`wrangler.toml` 的 `[observability]` 已启用 Workers Logs，但 `invocation_logs = false`：只留代码自己写的 console 日志，不记每次请求 / 每条 WebSocket 消息的调用日志（终端心跳、输出确认很密，会很快用完每日免费额度）。`SSHSessionDO` 始终输出 `[session-do] instance started`（实例新起，Durable Object 重启后的第一条）与 `[resume-debug]` 面包屑（断开时是否进入 60s 保持、保持到期、恢复被拒的具体分支，`not_found` 附实例年龄），用于定位“断线后恢复不了”；只含会话 ID 前 16 位与状态，不得加入凭据、用户名、主机或终端内容。查询：Dashboard → Workers → 本 Worker → Logs。
+
 ### Secrets 配置
 
 通过 Cloudflare Dashboard 或 wrangler CLI 设置：
