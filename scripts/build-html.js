@@ -22,12 +22,18 @@ try {
   execFileSync(process.execPath, ['scripts/sync-theme-editor.js'], { cwd: rootDir, stdio: 'inherit' });
   // Dependencies are installed explicitly by developers/CI. Keeping installs out
   // of the build makes production artifacts deterministic and offline-buildable.
-  const executableSuffix = process.platform === 'win32' ? '.cmd' : '';
-  execFileSync(path.join(frontendDir, 'node_modules', '.bin', `tsc${executableSuffix}`), [], {
+  // Run the packages' JS entry points with the current Node instead of node_modules/.bin shims:
+  // on Windows those are .cmd files, which Node (CVE-2024-27980 fix) refuses to spawn without a shell (EINVAL).
+  const frontendBin = (pkg, bin) => {
+    const manifest = require(path.join(frontendDir, 'node_modules', pkg, 'package.json'));
+    const entry = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin[bin];
+    return path.join(frontendDir, 'node_modules', pkg, entry);
+  };
+  execFileSync(process.execPath, [frontendBin('typescript', 'tsc')], {
     cwd: frontendDir,
     stdio: 'inherit',
   });
-  execFileSync(path.join(frontendDir, 'node_modules', '.bin', `vite${executableSuffix}`), ['build'], {
+  execFileSync(process.execPath, [frontendBin('vite', 'vite'), 'build'], {
     cwd: frontendDir,
     stdio: 'inherit',
   });
