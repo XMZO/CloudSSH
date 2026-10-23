@@ -14,7 +14,7 @@
 
 CloudSSH is a serverless Web SSH terminal built on Cloudflare Workers. Users connect to SSH servers through a browser-based terminal UI with integrated SFTP file management and AI Agent assistant.
 
-当前版本：`2.8.1`；根目录与 `frontend/package.json` 版本必须同步，更新说明见 `CHANGELOG.md`。
+当前版本：`2.8.3`；根目录与 `frontend/package.json` 版本必须同步，更新说明见 `CHANGELOG.md`。
 
 ## Architecture
 
@@ -148,6 +148,7 @@ frontend/
 │   │   ├── agent-panel.ts # AI assistant sidebar (context attachments, streaming, Markdown, confirmations, quick prompt chips)
 │   │   ├── code-actions.ts # Agent 代码块语言归一化与 Shell 单行命令可填性判定
 │   │   ├── response-errors.ts # 结构化 Responses 错误码本地化映射与安全展示
+│   │   ├── session-draft.ts # 浏览器中断草稿的 GitHub ID + serverId 命名空间与退出/旧格式清理
 │   │   └── terminal-selection-context.ts # Selection snapshots and untrusted-data prompt boundary
 │   ├── snippet-manager.ts # 命令片段库面板（云端/本地双后端、参数占位符录入、搜索/复制、填入/填入并执行、编辑/删除）
 │   ├── snippet-variables.ts # 命令片段 {{var}} 参数占位符提取与安全替换纯函数
@@ -422,6 +423,8 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
     **上下文**：默认 64,000/8,192 Token（输出含推理），AI 设置可调整窗口与输出上限；改配置后新建会话。接近容量时仅摘要较早对话，保留近期完整工具交互；摘要最多 20 秒、1,500 输出 Token，失败使用已有摘要和近期对话继续。无法容纳续接时保留原历史。`context-limits.ts` 统一估算，2.5 bytes/token 仅为启发式，不能把字节直接视为 Token。不保留独立 ExecutionJournal、任务证据包或永久执行事实检查点。
 
+    **浏览器中断草稿隔离**：30 分钟草稿仅按稳定 `github_id` + `serverId` 保存（本地管理员为 `-1`），不能用各分片可能相同的 `user.id` 或单独的 `serverId`；身份缺失或匿名时禁止读写。启动删除无法确认归属的旧无用户 key，绝不迁移到当前账号；退出关闭原账号面板并清理其全部服务器草稿，销毁后的迟到帧不得重建草稿。身份从认证响应经 `TabManager` 传入面板，换号时关闭旧标签，保留同账号中断恢复、完成清理与原有 TTL。`tests/agent-session-draft.test.ts` / `e2e/agent-responses.spec.ts` 覆盖命名空间、同浏览器换号、登出和迟到帧。
+
     **知识与工作历程**：保存的配置、知识和完整凭据直接提供给 Agent，不重复索取；移除关键词召回、来源/时效规则、授权判定和额外脱敏。凭据保留空格/换行/空密码，单值上限 16,384 字符，不静默截断；界面掩码不影响 Agent 使用原值。LLM 从普通会话生成自然语言 workLog 与 knowledge，连续工作可在 30 分钟内合并。不建立机器执行流水或来源审计。沿用现有 AES-GCM 存储；根密钥仍在同一 UserDBDO SQLite 的 `system_config.encryption_secret`，不是独立 Secret/KMS，也不抵御整库或运行时失陷。
 
     **唯一后台路径**：任务结束后通过 `/internal/servers/:id/agent-memory` 保存会话，由 UserDBDO Alarm 提炼；不维护 SSH 会话内的第二执行队列或在线状态轮询。每次读取当前 AI 配置和记忆 revision，一次生成、最多 25 秒。首次失败后以 2/4/8 秒最多重试三次，耗尽删除；记录尝试次数和下次唤醒时间以跨实例恢复。记忆写入与任务删除同事务，保留基本服务器归属/版本检查；不增加租约、完成回执、epoch 或失败审计。旧凭据及失败任务兼容读取。
@@ -434,7 +437,7 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
 43. **前端微交互、弹簧引擎与移动端手势边界** - 统一 Spring 物理弹簧引擎（`frontend/src/spring.ts`）通过 Euler 数值积分求解刚度与阻尼，提供 `snapTo` 与 `settled`，供主题/抽屉液态分段器与各类微交互共享，严禁私自重复实现；抽屉面板移动端触摸右滑关闭（`frontend/src/drawer-swipe.ts`）严格以 `headerSelector` 限定在头部，规避 iOS Safari 屏幕左缘系统返回手势冲突，且与列表纵向滚动明确隔离（纵向位移判定后即刻交还原生滚动），关闭时统一路由原面板的 `hide()`/`close()` 语义，保持在途传输中断（AGENTS.md #37）与清理逻辑；主视图切换过渡（`#terminal-section`）必须保持仅纯透明度淡入，严禁添加带 `transform` 的动画以防破坏其内部 `position: fixed` 抽屉面板的包含块（containing block）基准；所有微动效全量接入 `@media (prefers-reduced-motion: reduce)` 与 `data-ui-motion` 档位收敛；卡片指针聚光灯通过 rAF 节流直接写入 CSS 变量并在粗指针设备上跳过注册；骨架屏必须携带 `aria-busy` 与 `aria-hidden` 无障碍属性；SFTP 列表仅在行数 ≤150 时启用交错入场动画以防大目录并发卡顿。
 
-44. **可选版本更新提示** - 运行版本从根 `package.json` 构建时导入（根/前端版本保持同步），与官方 `main/package.json` 的稳定 SemVer 数值比较，不按字符串或提交数比较，不依赖 GitHub Releases/Tags，也不提示降级或预发布版本。`GET /api/version` 只向固定官方 raw GitHub URL 请求公开版本元数据（不转发用户头部/凭据、不跟随重定向），读取上限 16KiB、4s 超时，Worker isolate 去重/缓存并使用 Cloudflare fetch 缓存；成功缓存 6h、失败退避 15min，失败只返回 null。前端非阻塞同源读取，5s 超时，localStorage/内存缓存与跨标签页忽略同步；可见页面按缓存到期检查，隐藏/离线不检查，恢复可见/在线时重试。连接页在“连接参数”标题后展示紧凑版本徽标及可忽略的小提示，不再单独占用底部空间；标题区支持三语与窄屏自然换行，不能挤压语言切换或溢出卡片。用户空间/桌面终端仍使用页脚，移动终端放进“更多”菜单，分享认领页不检查；忽略仅针对该新版，下一个新版可再次提示。不弹窗、不自动更新/刷新/跳转、不影响 SSH/SFTP/Agent；更新日志链接为固定官方地址，三语文案随语言切换。
+44. **可选版本更新提示** - 运行版本从根 `package.json` 构建时导入（根/前端版本保持同步），与官方 `main/package.json` 的稳定 SemVer 数值比较，不按字符串或提交数比较，不依赖 GitHub Releases/Tags，也不提示降级或预发布版本。`GET /api/version` 只向固定官方 raw GitHub URL 请求公开版本元数据（不转发用户头部/凭据；必须使用 Workers 支持的 `redirect: 'manual'` 并拒绝 3xx，不得使用会在 Workers 中直接抛错的 `'error'` 模式），读取上限 16KiB、4s 超时，Worker isolate 去重/缓存并使用 Cloudflare fetch 缓存；成功缓存 6h、失败退避 15min，失败只返回 null。前端非阻塞同源读取，5s 超时，localStorage/内存缓存与跨标签页忽略同步；可见页面按缓存到期检查，隐藏/离线不检查，恢复可见/在线时重试。连接页在“连接参数”标题后展示紧凑版本徽标及可忽略的小提示，不再单独占用底部空间；标题区支持三语与窄屏自然换行，不能挤压语言切换或溢出卡片。用户空间/桌面终端仍使用页脚，移动终端放进“更多”菜单，分享认领页不检查；忽略仅针对该新版，下一个新版可再次提示。不弹窗、不自动更新/刷新/跳转、不影响 SSH/SFTP/Agent；更新日志链接为固定官方地址，三语文案随语言切换。
 
 ## SSH 兼容增强边界
 
